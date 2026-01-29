@@ -1,71 +1,141 @@
-name: Deploy from ECR
+はい、**できます。しかもそれがベストプラクティスです。**
+CIではほぼ全ての現場で
 
-on:
-workflow_dispatch:
-inputs:
-image_tag:
-description: "Select image tag (sha-xxxx)"
-required: true
-type: choice
-options: [] # 後で動的に差し替え
+> 最新コミットのSHA → コンテナイメージのタグ
 
-jobs:
-prepare:
-name: Fetch latest ECR tags
-runs-on: ubuntu-latest
-outputs:
-tags: ${{ steps.tags.outputs.tags }}
-steps: - name: Configure AWS credentials (OIDC)
-uses: aws-actions/configure-aws-credentials@v4
-with:
-role-to-assume: arn:aws:iam::123456789012:role/github-actions-role
-aws-region: ap-northeast-1
+という形を使っています。
 
-      - name: Fetch latest sha-* tags from ECR
-        id: tags
-        run: |
-          TAGS=$(aws ecr describe-images \
-            --repository-name myapp \
-            --query "sort_by(imageDetails,& imagePushedAt)[-10:].imageTags[]" \
-            --output json | jq -r '.[]' | grep '^sha-' || true)
+---
 
-          if [ -z "$TAGS" ]; then
-            echo "No sha-* tags found"
-            exit 1
-          fi
+# 基本形
 
-          JSON=$(printf '%s\n' $TAGS | jq -R . | jq -s .)
-          echo "tags=$JSON" >> $GITHUB_OUTPUT
+```
+sha-<git commit SHA>
+```
 
-deploy:
-name: Deploy
-needs: prepare
-runs-on: ubuntu-latest
-steps: - name: Show selected tag
-run: |
-echo "Selected tag: ${{ github.event.inputs.image_tag }}"
+例：
 
-      - name: Resolve digest from ECR
-        id: digest
-        run: |
-          DIGEST=$(aws ecr describe-images \
-            --repository-name myapp \
-            --image-ids imageTag=${{ github.event.inputs.image_tag }} \
-            --query 'imageDetails[0].imageDigest' \
-            --output text)
+```
+sha-a1b2c3d4
+```
 
-          echo "digest=$DIGEST" >> $GITHUB_OUTPUT
-          echo "Digest: $DIGEST"
+---
 
-      - name: Deploy (example placeholder)
-        run: |
-          echo "Deploying myapp@${{ steps.digest.outputs.digest }}"
-          # ここに ECS/EKS デプロイ処理を入れる
+# GitHub Actions での実装例（そのまま使えます）
 
-- name: Show recent tags
+## フルSHAを使う場合
+
+```yaml
+- name: Set image tag
   run: |
-  echo "Recent tags:"
-  aws ecr describe-images \
-   --repository-name myapp \
-   --query "sort_by(imageDetails,& imagePushedAt)[-10:].imageTags[]" \
-   --output json | jq -r '.[]'
+    echo "IMAGE_TAG=sha-${GITHUB_SHA}" >> $GITHUB_ENV
+```
+
+---
+
+## 短縮SHA（おすすめ：8桁）
+
+```yaml
+- name: Set image tag
+  run: |
+    SHORT_SHA=$(echo $GITHUB_SHA | cut -c1-8)
+    echo "IMAGE_TAG=sha-${SHORT_SHA}" >> $GITHUB_ENV
+```
+
+---
+
+## Docker / Podman ビルド & ECR push
+
+```yaml
+- name: Build image
+  run: |
+    docker build -t myapp:${IMAGE_TAG} .
+
+- name: Login to ECR
+  run: |
+    aws ecr get-login-password | docker login --username AWS --password-stdin <account>.dkr.ecr.ap-northeast-1.amazonaws.com
+
+- name: Push image
+  run: |
+    docker tag myapp:${IMAGE_TAG} <account>.dkr.ecr.ap-northeast-1.amazonaws.com/myapp:${IMAGE_TAG}
+    docker push <account>.dkr.ecr.ap-northeast-1.amazonaws.com/myapp:${IMAGE_TAG}
+```
+
+---
+
+# 推奨タグ設計（あなたの文脈向け）
+
+| 種類 | 例             | 用途       |
+| ---- | -------------- | ---------- |
+| 必須 | `sha-a1b2c3d4` | CD・再現性 |
+| 任意 | `v1.2.3`       | リリース   |
+| 任意 | `run-12345`    | 再ビルド   |
+
+---
+
+# なぜSHAタグが最適か
+
+| 観点          | 理由                 |
+| ------------- | -------------------- |
+| 一意性        | 同じコード = 同じSHA |
+| 再現性        | ロールバック容易     |
+| 追跡          | Gitと1:1対応         |
+| 監査          | 変更履歴が明確       |
+| ECR immutable | 相性抜群             |
+
+---
+
+# 重要な注意点
+
+## ① 同一コミットを再ビルドすると衝突
+
+対策：
+
+- 原則：再ビルド禁止
+  または
+- `sha-xxxx-build2` のようにsuffix追加
+
+---
+
+## ② フルSHA vs 短縮SHA
+
+| 種類     | 推奨 |
+| -------- | ---- |
+| フル40桁 | 過剰 |
+| 8〜12桁  | ✅   |
+
+---
+
+# 実務での完成形
+
+CI:
+
+```
+myapp:sha-a1b2c3d4
+myapp:v1.4.2
+```
+
+CD:
+
+```
+選択 → sha-a1b2c3d4 → digest解決 → deploy
+```
+
+---
+
+# まとめ
+
+- ✅ 最新コミットSHAをタグにできる
+- ✅ それが標準
+- ✅ ECR immutableと相性最高
+- ✅ CD設計が楽になる
+
+---
+
+もしよければ：
+
+- Docker or Podman
+- OIDC認証済みか
+- マルチアーキ対応要否
+
+に合わせて **完全なCIテンプレ** も作れます。
