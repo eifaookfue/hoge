@@ -1,67 +1,65 @@
-あります。CodeBuild でも AWS CLI で「実行中ビルド一覧」を取れます。
-gh run list に相当するのはだいたいこれです。
+あります 👍
+CodeBuild のログは基本 CloudWatch Logs に出るので、CLI では CloudWatch Logs 経由で見る形になります。
 
 ⸻
 
-✅ CodeBuild版「実行中一覧」
+✅ CodeBuild のログを見る代表的な方法（CLI）
 
-① 実行中のビルドID一覧を取得
+① ビルドIDからログ情報を取得
 
-aws codebuild list-builds-for-project \
-  --project-name <PROJECT_NAME> \
-  --sort-order DESC
+まず build id を指定してログの場所を調べます。
 
-ただしこれは「全部」出るので、次で絞り込みます。
-
-⸻
-
-② 実行中（IN_PROGRESS）のものだけ見る（実用的）
-
-aws codebuild list-builds-for-project \
-  --project-name <PROJECT_NAME> \
-  --sort-order DESC \
-  --query 'ids[0:20]' \
-  --output text
-
-得られたIDを使って詳細取得：
-
-aws codebuild batch-get-builds \
-  --ids <BUILD_ID1> <BUILD_ID2> \
-  --query 'builds[].{id:id,status:buildStatus,phase:currentPhase,start:startTime}' \
+aws codebuild batch-get-builds --ids <BUILD_ID> \
+  --query 'builds[0].logs.{group:groupName,stream:streamName}' \
   --output table
 
+出力例：
+	•	log group: /aws/codebuild/my-project
+	•	log stream: xxxxxx
 
 ⸻
 
-✅ もっと「gh run list」っぽく一発で出す例
+② CloudWatch Logs でログを読む
 
-IDS=$(aws codebuild list-builds-for-project --project-name <PROJECT_NAME> --sort-order DESC --query 'ids[0:10]' --output text)
+最新ログを表示
 
-aws codebuild batch-get-builds --ids $IDS \
-  --query 'builds[].{status:buildStatus,phase:currentPhase,id:id,start:startTime}' \
-  --output table
+aws logs get-log-events \
+  --log-group-name "<LOG_GROUP>" \
+  --log-stream-name "<LOG_STREAM>" \
+  --start-from-head
 
 
 ⸻
 
-✅ 実行中だけを抽出したい場合（おすすめ）
+✅ 「ビルドIDからログを見る」までを一発でやる例
 
-IDS=$(aws codebuild list-builds-for-project --project-name <PROJECT_NAME> --sort-order DESC --query 'ids[0:20]' --output text)
+LOG_GROUP=$(aws codebuild batch-get-builds --ids <BUILD_ID> --query 'builds[0].logs.groupName' --output text)
+LOG_STREAM=$(aws codebuild batch-get-builds --ids <BUILD_ID> --query 'builds[0].logs.streamName' --output text)
 
-aws codebuild batch-get-builds --ids $IDS \
-  --query 'builds[?buildStatus==`IN_PROGRESS`].{status:buildStatus,phase:currentPhase,id:id,start:startTime}' \
-  --output table
+aws logs get-log-events \
+  --log-group-name "$LOG_GROUP" \
+  --log-stream-name "$LOG_STREAM" \
+  --start-from-head
 
+
+⸻
+
+✅ リアルタイムに近い形で追いかけたい場合
+
+CloudWatch Logs は tail -f みたいに標準では難しいですが、近いことはできます。
+
+aws logs tail "$LOG_GROUP" --follow
+
+※ aws logs tail は AWS CLI v2 で使えます。
 
 ⸻
 
 まとめ
-	•	gh run list 相当は
-	•	list-builds-for-project
-	•	batch-get-builds
-の組み合わせで実現できます。
-	•	CodeBuild は「一覧コマンド1発」より 2段階取得が基本です。
+	•	CodeBuild は gh run view --log のように1発ではなく
+	•	CodeBuildでログの場所を取得
+	•	CloudWatch Logsで読む
+の2段階です。
 
 ⸻
 
-必要ならこれを codebuild-run-list みたいなシェル関数にして、ghっぽいUXに整えたものも作れますよ。
+必要なら、codebuild-log <build-id> みたいなコマンド（シェル関数）を作って、gh並みに便利にできますよ。
